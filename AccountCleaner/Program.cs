@@ -22,97 +22,112 @@ namespace AccountCleaner
         public int Upvotes, Downvotes;
         public CommentData Parent, Comment;
     }
-    class Program
+    public class Credentials
     {
-        static IEnumerable<Subreddit> ReadSubreddits(string username, string password)
+        public string Username, Password;
+    }
+    static class Program
+    {
+        static void PruneComments(this Reddit reddit, bool dryrun = true, int minScore = 0)
         {
-            var reddit = new Reddit();
-            var user = reddit.LogIn(username, password);
-            var  subs = user.GetSubscribedSubreddits();
-            return subs;
-        }
-        static void PruneComments(string username, string password, bool dryrun = true, int minScore = 0)
-        {
-            var reddit = new Reddit();
-            var user = reddit.LogIn(username, password);
-            var comments = user.Comments.Where(x => x.Score < minScore).ToList();
+            var comments = reddit.User.Comments.AsQueryable().Where(x => x.Score < minScore);
             var solutionDir = Directory.GetParent(Directory.GetCurrentDirectory()).Parent.FullName;
             var path = Path.Combine(solutionDir, $@"deleted_comments_{DateTime.Today:yyyyMMdd}.txt");
+            int batchSize = 10;
+            int batchIndex = 0;
             using (var writer = new StreamWriter(path))
             {
                 writer.Write("[");
                 bool first = true;
-                int count = 0;
-                foreach (var comment in comments)
+                while (true)
                 {
-                    Console.WriteLine("Clearing comment {0} of {1}", count++, comments.Count);
-                    var pieces = comment.ParentId.Split('_');
-                    string split_id = pieces[0] + "_/" + string.Join("", pieces.Skip(1));
-                    string parent_uri = Regex.Replace(comment.Shortlink, @"(?<=/)_/[^/]*$", split_id);
-                    var parent = reddit.GetComment(new Uri(parent_uri));
-                    var data = new CommentMetadata
+                    var batch = comments.Take(batchSize).ToList();
+                    for(int i = 0; i < batch.Count; i++)
                     {
-                        Author = comment.Author,
-                        Subreddit = comment.Subreddit,
-                        Upvotes = comment.Upvotes,
-                        Downvotes = comment.Downvotes,
-                        Parent = new CommentData
+                        var comment = batch[i];
+                        Console.WriteLine($"Clearing comment {i} of {batch.Count} (batch {batchIndex++})");
+                        var pieces = comment.ParentId.Split('_');
+                        string split_id = pieces[0] + "_/" + string.Join("", pieces.Skip(1));
+                        string parent_uri = Regex.Replace(comment.Shortlink, @"(?<=/)_/[^/]*$", split_id);
+                        var parent = reddit.GetComment(new Uri(parent_uri));
+                        var data = new CommentMetadata
                         {
-                            Link = parent_uri,
-                            Body = parent.Body,
-                            BodyHtml = parent.BodyHtml
-                        },
-                        Comment = new CommentData
-                        {
-                            Link = comment.Shortlink,
-                            Body = comment.Body,
-                            BodyHtml = comment.BodyHtml
-                        }
-                    };
-                    string json = JsonConvert.SerializeObject(data, Formatting.Indented);
-                    if (!first) writer.Write(",\n");
-                    first = false;
-                    writer.Write(json);
-                    string format = "{0} in {1} ({2} up, {3} down)" + 
-                        "\n----------------------------------\n{4}" + // parent uri
-                        "\n----------------------------------\n{5}" + // parent body
-                        "\n----------------------------------\n{6}" + // parent body html
-                        "\n----------------------------------\n{7}" + // comment uri
-                        "\n----------------------------------\n{8}" + // comment body
-                        "\n----------------------------------\n{9}" + // comment body html
-                        "\n----------------------------------\n\n";
-                    string scomment = string.Format(format, 
-                        comment.Author, comment.Subreddit, comment.Upvotes, comment.Downvotes, 
-                        parent_uri, parent.Body, parent.BodyHtml, 
-                        comment.Shortlink, comment.Body, comment.BodyHtml
-                    );
-                    writer.Write(scomment);
-                    writer.Flush();
-                    if (!dryrun)
-                    {
-                        comment.EditText("");
-                        comment.Save();
-                        comment.Del();
-                        comment.Save();
+                            Author = comment.AuthorName,
+                            Subreddit = comment.Subreddit,
+                            Upvotes = comment.Upvotes,
+                            Downvotes = comment.Downvotes,
+                            Parent = new CommentData
+                            {
+                                Link = parent_uri,
+                                Body = parent.Body,
+                                BodyHtml = parent.BodyHtml
+                            },
+                            Comment = new CommentData
+                            {
+                                Link = comment.Shortlink,
+                                Body = comment.Body,
+                                BodyHtml = comment.BodyHtml
+                            }
+                        };
+                        writer.WriteCommentData(comment, parent, data, first);
+                        if (!dryrun)
+                            comment.DeleteComment();
                     }
+                    if (batch.Count < batchSize)
+                        break;
+                    else
+                        comments = comments.Skip(batchSize);
+                    first = false;
                 }
                 writer.Write("]");
             }
         }
-        static void Subscribe(string username, string password, IEnumerable<Subreddit> subs)
+
+        static void DeleteComment(this Comment comment)
         {
-            var reddit = new Reddit();
-            var user = reddit.LogIn(username, password);
-            foreach(var sub in subs)
+            comment.EditText("");
+            comment.Save();
+            comment.Del();
+            comment.Save();
+        }
+        static void WriteCommentData(this StreamWriter writer, Comment comment, Comment parent, CommentMetadata data, bool first)
+        {
+            string json = JsonConvert.SerializeObject(data, Formatting.Indented);
+            if (!first) writer.Write(",\n");
+            writer.Write(json);
+            string format = "{0} in {1} ({2} up, {3} down)" +
+                "\n----------------------------------\n{4}" + // parent uri
+                "\n----------------------------------\n{5}" + // parent body
+                "\n----------------------------------\n{6}" + // parent body html
+                "\n----------------------------------\n{7}" + // comment uri
+                "\n----------------------------------\n{8}" + // comment body
+                "\n----------------------------------\n{9}" + // comment body html
+                "\n----------------------------------\n\n";
+            string scomment = string.Format(format,
+                comment.AuthorName, comment.Subreddit, comment.Upvotes, comment.Downvotes,
+                parent.Permalink, parent.Body, parent.BodyHtml,
+                comment.Shortlink, comment.Body, comment.BodyHtml
+            );
+            writer.Write(scomment);
+            writer.Flush();
+        }
+        static void CopySubscriptions(this Reddit target, Reddit source)
+        {
+            foreach(var sourceSub in source.User.SubscribedSubreddits)
             {
-                sub.Subscribe();
+                var targetSub = target.GetSubreddit(sourceSub.Name);
+                targetSub.Subscribe();
             }
         }
         static void Main(string[] args)
         {
-            PruneComments("0xjake", "omgtkkyb");
-            var subs = ReadSubreddits("0xjake", "omgtkkyb");
-            Subscribe("archipeepees", "AMKLPUVSUYESLNWN", subs);
+            var source = new Reddit();
+            source.LogIn("0xjake", "9jKJPZUc9VVnh2hwKK6kaCBs");
+            var target = new Reddit();
+            target.LogIn("archipeepees", "UUFLPPPAFUCWYZMH");
+
+            //target.CopySubscriptions(source);
+            source.PruneComments();
         }
     }
 }
