@@ -45,23 +45,13 @@ namespace AccountCleaner
                     for(int i = 0; i < batch.Count; i++)
                     {
                         var comment = batch[i];
-                        Console.WriteLine($"Clearing comment {i} of {batch.Count} (batch {batchIndex++})");
-                        var pieces = comment.ParentId.Split('_');
-                        string split_id = pieces[0] + "_/" + string.Join("", pieces.Skip(1));
-                        string parent_uri = Regex.Replace(comment.Shortlink, @"(?<=/)_/[^/]*$", split_id);
-                        var parent = reddit.GetComment(new Uri(parent_uri));
+                        Console.WriteLine($"Clearing comment {i} of {batch.Count} (batch {batchIndex})");
                         var data = new CommentMetadata
                         {
                             Author = comment.AuthorName,
                             Subreddit = comment.Subreddit,
                             Upvotes = comment.Upvotes,
                             Downvotes = comment.Downvotes,
-                            Parent = new CommentData
-                            {
-                                Link = parent_uri,
-                                Body = parent.Body,
-                                BodyHtml = parent.BodyHtml
-                            },
                             Comment = new CommentData
                             {
                                 Link = comment.Shortlink,
@@ -69,14 +59,14 @@ namespace AccountCleaner
                                 BodyHtml = comment.BodyHtml
                             }
                         };
-                        writer.WriteCommentData(comment, parent, data, first);
+                        writer.WriteCommentData(comment, data, first);
                         if (!dryrun)
                             comment.DeleteComment();
                     }
                     if (batch.Count < batchSize)
                         break;
-                    else
-                        comments = comments.Skip(batchSize);
+                    comments = comments.Skip(batchSize);
+                    batchIndex++;
                     first = false;
                 }
                 writer.Write("]");
@@ -90,25 +80,18 @@ namespace AccountCleaner
             comment.Del();
             comment.Save();
         }
-        static void WriteCommentData(this StreamWriter writer, Comment comment, Comment parent, CommentMetadata data, bool first)
+        static void WriteCommentData(this StreamWriter writer, Comment comment, CommentMetadata data, bool first)
         {
+            //var parent = comment.Parent; // TODO: figure out how to get the parent
             string json = JsonConvert.SerializeObject(data, Formatting.Indented);
             if (!first) writer.Write(",\n");
             writer.Write(json);
-            string format = "{0} in {1} ({2} up, {3} down)" +
-                "\n----------------------------------\n{4}" + // parent uri
-                "\n----------------------------------\n{5}" + // parent body
-                "\n----------------------------------\n{6}" + // parent body html
-                "\n----------------------------------\n{7}" + // comment uri
-                "\n----------------------------------\n{8}" + // comment body
-                "\n----------------------------------\n{9}" + // comment body html
+            string output = $"{comment.AuthorName} in {comment.Subreddit} ({comment.Upvotes} up, {comment.Downvotes} down)" +
+                $"\n----------------------------------\n{comment.Shortlink}" +
+                $"\n----------------------------------\n{comment.Body}" + 
+                $"\n----------------------------------\n{comment.BodyHtml}" +
                 "\n----------------------------------\n\n";
-            string scomment = string.Format(format,
-                comment.AuthorName, comment.Subreddit, comment.Upvotes, comment.Downvotes,
-                parent.Permalink, parent.Body, parent.BodyHtml,
-                comment.Shortlink, comment.Body, comment.BodyHtml
-            );
-            writer.Write(scomment);
+            writer.Write(output);
             writer.Flush();
         }
         static void CopySubscriptions(this Reddit target, Reddit source)
